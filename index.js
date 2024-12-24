@@ -1,29 +1,31 @@
-
 const express = require("express");
-const mongoose = require("mongoose");
+const { Pool } = require("pg");
 const bodyParser = require("body-parser");
 
 const app = express();
 app.use(bodyParser.json());
 
-// MongoDB connection string (replace with your Render environment variable)
-const mongoURI = process.env.MONGO_URI;
-
-mongoose.connect(mongoURI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-}).then(() => console.log("Connected to MongoDB"))
-  .catch(err => console.error("Failed to connect to MongoDB", err));
-
-// Define a schema for product data
-const ProductSchema = new mongoose.Schema({
-  productId: String,
-  productUrl: String,
-  tag: String,
-  timestamp: Date,
+// Connect to PostgreSQL using the DATABASE_URL from environment variables
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false, // Required for hosted PostgreSQL
+  },
 });
 
-const Product = mongoose.model("Product", ProductSchema);
+// Create a table for storing product data if it doesn't exist
+const createTableQuery = `
+  CREATE TABLE IF NOT EXISTS products (
+    id SERIAL PRIMARY KEY,
+    product_id VARCHAR(255),
+    product_url TEXT,
+    tag VARCHAR(255),
+    timestamp TIMESTAMP
+  );
+`;
+pool.query(createTableQuery)
+  .then(() => console.log("Table created or already exists"))
+  .catch((err) => console.error("Error creating table", err));
 
 // POST route to log product data
 app.post("/api/log-product", async (req, res) => {
@@ -34,10 +36,16 @@ app.post("/api/log-product", async (req, res) => {
   }
 
   try {
-    const product = new Product({ productId, productUrl, tag, timestamp });
-    await product.save();
-    res.status(201).json({ message: "Product logged successfully" });
+    const query = `
+      INSERT INTO products (product_id, product_url, tag, timestamp)
+      VALUES ($1, $2, $3, $4)
+      RETURNING *;
+    `;
+    const values = [productId, productUrl, tag, timestamp || new Date()];
+    const result = await pool.query(query, values);
+    res.status(201).json({ message: "Product logged successfully", product: result.rows[0] });
   } catch (error) {
+    console.error("Error logging product data", error);
     res.status(500).json({ error: "Error saving product data" });
   }
 });
@@ -45,9 +53,11 @@ app.post("/api/log-product", async (req, res) => {
 // GET route to fetch logged products
 app.get("/api/get-products", async (req, res) => {
   try {
-    const products = await Product.find().sort({ timestamp: -1 });
-    res.status(200).json(products);
+    const query = "SELECT * FROM products ORDER BY timestamp DESC;";
+    const result = await pool.query(query);
+    res.status(200).json(result.rows);
   } catch (error) {
+    console.error("Error fetching product data", error);
     res.status(500).json({ error: "Error fetching product data" });
   }
 });
